@@ -174,16 +174,32 @@ func (rd *h2cInitReqBody) Read(b []byte) (int, error) {
 		if len(rd.buf) == 0 {
 			rd.buf = make([]byte, rd.FrameSize)
 		}
-		if n, err := rd.Body.Read(rd.buf); n == 0 || err == io.EOF {
+		n, err := rd.Body.Read(rd.buf)
+		if n == 0 || err == io.EOF {
 			rd.streamEnd = true
-		} else if err != nil {
-			return 0, err
-		} else if err := rd.Framer.WriteData(1, rd.streamEnd, rd.buf[:n]); err != nil {
-			return 0, err
 		}
-		rd.streamEnd = true
+		if n > 0 {
+			if err := rd.Framer.WriteData(1, rd.streamEnd, rd.buf[:n]); err != nil {
+				return 0, err
+			}
+		}
 	}
 	return rd.Buffer.Read(b)
+}
+
+type vacuumPreface struct {
+	io.Reader
+}
+
+func (rd vacuumPreface) Read(b []byte) (int, error) {
+	n, err := rd.Reader.Read([]byte(http2.ClientPreface))
+	if n != len(http2.ClientPreface) {
+		return n, io.EOF
+	}
+	if err != nil && err != io.EOF {
+		return n, err
+	}
+	return 0, io.EOF
 }
 
 type conn struct {
@@ -205,29 +221,24 @@ func (c conn) Write(b []byte) (int, error) {
 // ServeHTTP implements http.Handler interface for HTTP/2 h2c upgrade.
 func (u Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if hijacker, ok := w.(http.Hijacker); ok {
-		if !u.DisableDirect && r.Method == "PRI" && r.URL.Path == "*" {
+		if !u.DisableDirect && r.Method == "PRI" && r.URL.Path == "*" && r.Proto == "HTTP/2.0" {
 			body := "SM\r\n\r\n"
-			buf := []byte(body)
-			if n, _ := r.Body.Read(buf); n != len(body) {
-				log.Print("Preface direct mode error")
-			} else if body != string(buf[:n]) {
-				log.Print("Preface broken")
+			con, rw, err := hijacker.Hijack()
+			defer con.Close()
+			if err != nil {
+				log.Printf("Hijack failed %v", err)
+			} else if n, err := io.MultiReader(r.Body, rw).Read([]byte(body)); n != len(body) {
+				log.Printf("%d %v", n, err)
 			} else {
-				con, rw, err := hijacker.Hijack()
-				defer con.Close()
-				if err != nil {
-					log.Printf("Hijack failed %v", err)
-				} else {
-					wrap := io.MultiReader(bytes.NewBuffer([]byte(http2.ClientPreface)), rw)
-					nc := conn{
-						Conn:   con,
-						Writer: rw.Writer,
-						Reader: wrap,
-					}
-					h2c := &http2.Server{}
-					h2c.ServeConn(nc, &http2.ServeConnOpts{Handler: u.Handler})
-					return
+				wrap := io.MultiReader(bytes.NewBuffer([]byte(http2.ClientPreface)), rw)
+				nc := conn{
+					Conn:   con,
+					Writer: rw.Writer,
+					Reader: wrap,
 				}
+				h2c := &http2.Server{}
+				h2c.ServeConn(nc, &http2.ServeConnOpts{Handler: u.Handler})
+				return
 			}
 			http.Error(w, "Server could not handle the request.", http.StatusMethodNotAllowed)
 			return
@@ -308,7 +319,7 @@ func (u Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			nc := conn{
 				Conn:   con,
 				Writer: rw.Writer,
-				Reader: io.MultiReader(h2req2, rw),
+				Reader: io.MultiReader(h2req2, vacuumPreface{rw}, rw),
 			}
 			h2c := &http2.Server{}
 			for _, s := range initReq.Settings {
