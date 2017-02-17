@@ -202,10 +202,6 @@ func (c conn) Write(b []byte) (int, error) {
 	return n, e
 }
 
-func ExampleServeHTTP() {
-	log.Fatal(http.ListenAndServe(":8080", &Server{}))
-}
-
 // ServeHTTP implements http.Handler interface for HTTP/2 h2c upgrade.
 func (u Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if hijacker, ok := w.(http.Hijacker); ok {
