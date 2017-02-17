@@ -202,7 +202,7 @@ func (c conn) Write(b []byte) (int, error) {
 	return n, e
 }
 
-func Example() {
+func ExampleServeHTTP() {
 	log.Fatal(http.ListenAndServe(":8080", &Server{}))
 }
 
