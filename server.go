@@ -194,7 +194,7 @@ type vacuumPreface struct {
 func (rd vacuumPreface) Read(b []byte) (int, error) {
 	n, err := rd.Reader.Read([]byte(http2.ClientPreface))
 	if n != len(http2.ClientPreface) {
-		return n, io.EOF
+		return n, io.ErrUnexpectedEOF
 	}
 	if err != nil && err != io.EOF {
 		return n, err
