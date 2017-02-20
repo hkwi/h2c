@@ -115,7 +115,11 @@ func InitH2c(req *http.Request) *InitRequest {
 	if err := wh(":method", req.Method, false); err != nil {
 		return nil
 	}
-	if err := wh(":authority", req.URL.Host, false); err != nil {
+	host := req.URL.Host
+	if len(host) == 0 {
+		host = req.Host
+	}
+	if err := wh(":authority", host, false); err != nil {
 		return nil
 	}
 	if req.Method != "CONNECT" {
