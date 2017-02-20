@@ -204,16 +204,42 @@ type conn struct {
 	net.Conn // embed for methods
 	io.Reader
 	*bufio.Writer
+	vacuumAck bool
+	buf       []byte
 }
 
 func (c conn) Read(b []byte) (int, error) {
 	return c.Reader.Read(b)
 }
 
-func (c conn) Write(b []byte) (int, error) {
-	n, e := c.Writer.Write(b)
+func (c *conn) Write(b []byte) (int, error) {
+	if c.vacuumAck {
+		c.buf = append(c.buf, b...)
+		for c.vacuumAck {
+			if len(c.buf) < 9 {
+				return len(b), nil // just buffered into c.buf
+			}
+			fh, err := http2.ReadFrameHeader(bytes.NewBuffer(c.buf))
+			if err != nil {
+				return 0, err // in case frame was broken
+			} else if uint32(len(c.buf)) < 9+fh.Length {
+				return len(b), nil // just buffered into c.buf
+			}
+			buf := c.buf[:9+fh.Length]
+			c.buf = c.buf[9+fh.Length:]
+			if http2.FrameSettings == fh.Type && fh.Flags.Has(http2.FlagSettingsAck) {
+				c.vacuumAck = false
+			} else if n, err := c.Writer.Write(buf); err != nil {
+				return n, err
+			}
+		}
+		n, err := c.Writer.Write(c.buf)
+		c.Writer.Flush()
+		return n, err
+	}
+	n, err := c.Writer.Write(b)
 	c.Writer.Flush()
-	return n, e
+	return n, err
 }
 
 // ServeHTTP implements http.Handler interface for HTTP/2 h2c upgrade.
@@ -229,7 +255,7 @@ func (u Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				log.Printf("%d %v", n, err)
 			} else {
 				wrap := io.MultiReader(bytes.NewBuffer([]byte(http2.ClientPreface)), rw)
-				nc := conn{
+				nc := &conn{
 					Conn:   con,
 					Writer: rw.Writer,
 					Reader: wrap,
@@ -307,17 +333,23 @@ func (u Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
+			rw.Write([]byte(
+				"HTTP/1.1 101 Switching Protocols\r\n" +
+					"Connection: upgrade\r\n" +
+					"Upgrade: h2c\r\n" +
+					"\r\n"))
+
 			h2req2 := &h2cInitReqBody{
 				Framer:    fr,
 				Buffer:    h2req,
 				Body:      r.Body,
 				FrameSize: fsz,
 			}
-
-			nc := conn{
-				Conn:   con,
-				Writer: rw.Writer,
-				Reader: io.MultiReader(h2req2, vacuumPreface{rw}, rw),
+			nc := &conn{
+				Conn:      con,
+				Writer:    rw.Writer,
+				Reader:    io.MultiReader(h2req2, vacuumPreface{rw}, rw),
+				vacuumAck: true, // because we sent HTTP2-Settings payload
 			}
 			h2c := &http2.Server{}
 			for _, s := range initReq.Settings {
@@ -330,11 +362,6 @@ func (u Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					// just ignore
 				}
 			}
-			nc.Write([]byte(
-				"HTTP/1.1 101 Switching Protocols\r\n" +
-					"Connection: upgrade\r\n" +
-					"Upgrade: h2c\r\n" +
-					"\r\n"))
 			h2c.ServeConn(nc, &http2.ServeConnOpts{Handler: u.Handler})
 			return
 		}
