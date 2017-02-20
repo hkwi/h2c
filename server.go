@@ -178,10 +178,8 @@ func (rd *h2cInitReqBody) Read(b []byte) (int, error) {
 		if n == 0 || err == io.EOF {
 			rd.streamEnd = true
 		}
-		if n > 0 {
-			if err := rd.Framer.WriteData(1, rd.streamEnd, rd.buf[:n]); err != nil {
-				return 0, err
-			}
+		if err := rd.Framer.WriteData(1, rd.streamEnd, rd.buf[:n]); err != nil {
+			return 0, err
 		}
 	}
 	return rd.Buffer.Read(b)
