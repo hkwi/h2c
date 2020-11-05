@@ -2,8 +2,8 @@ package h2c_test
 
 import (
 	"fmt"
-	. "h2c"
-	"http"
+	"h2c"
+	"net/http"
 	"log"
 )
 
@@ -14,7 +14,7 @@ import (
 // If you'd like to control the path, you can manually set the inner
 // http.Handler.
 func ExampleServer_serveHTTP() {
-	http.HandleFunc("/", func(w http.ResposneWriter, r *http.Request) {
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "hello")
 	})
 	log.Fatal(http.ListenAndServe(":8080", &h2c.Server{}))
